@@ -1525,13 +1525,21 @@ class ViTransformerWrapper(Module):
         return_logits_and_embeddings = False
     ):
         b, p = img.shape[0], self.patch_size
-
-        x = rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = p, p2 = p)
+        # split the image into its 3 channels
+        c0, c1, c2 = img[:, 0, :, :], img[:, 1, :, :], img[:, 2, :, :]
+        # extract patches from each channel
+        patches_c0 = rearrange(c0, 'b (h p1) (w p2) -> b (h w) (p1 p2)', p1=p, p2=p)
+        patches_c1 = rearrange(c1, 'b (h p1) (w p2) -> b (h w) (p1 p2)', p1=p, p2=p)
+        patches_c2 = rearrange(c2, 'b (h1 p1) (w p2) -> b (h w) (p1 p2)', p1=p, p2=p)
+        # concatenate the patches from each channel in sequence
+        x = torch.concatenate((patches_c0, patches_c1, patches_c2),dim=1)
+        # flatten the patches to create the embeddings
+        x = rearrange(x, 'b n (p1 p2) -> b n (p1) (p2 p)', p1=p, p2=p)
         x = self.patch_to_embedding(x)
         n = x.shape[1]
-
+        # add positional embeddings
         x = x + self.pos_embedding[:, :n]
-
+        # apply normalization and dropout
         x = self.post_emb_norm(x)
         x = self.dropout(x)
 
