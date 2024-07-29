@@ -8,7 +8,8 @@ from x_transformers.x_transformers import (
     FeedForward,
     RMSNorm,
     TransformerWrapper,
-    ViTransformerWrapper
+    ViTransformerWrapper,
+    ViTransformerWrapperMod
 )
 
 from x_transformers.autoregressive_wrapper import AutoregressiveWrapper

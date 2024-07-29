@@ -366,7 +366,7 @@ class AlibiPositionalBias(Module):
         slopes = rearrange(slopes, 'h -> h 1 1')
         self.register_buffer('slopes', slopes, persistent = False)
         self.register_buffer('bias', None, persistent = False)
-    
+
     def get_bias(self, i, j, device):
         i_arange = torch.arange(j - i, j, device = device)
         j_arange = torch.arange(j, device = device)
@@ -1476,6 +1476,7 @@ class CrossAttender(AttentionLayers):
     def __init__(self, **kwargs):
         super().__init__(cross_attend = True, only_cross = True, **kwargs)
 
+
 class ViTransformerWrapper(Module):
     def __init__(
         self,
@@ -1519,51 +1520,184 @@ class ViTransformerWrapper(Module):
         self.mlp_head = nn.Linear(dim, num_classes) if exists(num_classes) else nn.Identity()
 
     def forward(
-        self,
-        img,
-        return_embeddings = False,
-        return_logits_and_embeddings = False
+            self,
+            img,
+            return_embeddings=False,
+            return_logits_and_embeddings=False
     ):
+        # Extract batch size and patch size
         b, p = img.shape[0], self.patch_size
-        # split the image into its 3 channels
-        c0, c1, c2 = img[:, 0, :, :], img[:, 1, :, :], img[:, 2, :, :]
-        # extract patches from each channel
-        patches_c0 = rearrange(c0, 'b (h p1) (w p2) -> b (h w) (p1 p2)', p1=p, p2=p)
-        patches_c1 = rearrange(c1, 'b (h p1) (w p2) -> b (h w) (p1 p2)', p1=p, p2=p)
-        patches_c2 = rearrange(c2, 'b (h1 p1) (w p2) -> b (h w) (p1 p2)', p1=p, p2=p)
-        # concatenate the patches from each channel in sequence
-        x = torch.concatenate((patches_c0, patches_c1, patches_c2),dim=1)
-        # flatten the patches to create the embeddings
-        x = rearrange(x, 'b n (p1 p2) -> b n (p1) (p2 p)', p1=p, p2=p)
+        print('img shape', img.shape)
+        print('batch size', b)
+        print('patch size', p)
+
+        # Rearrange the image tensor into patches
+        x = rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=p, p2=p)
+        print('patch shape', x.shape)
+
+        # Convert patches to embeddings
         x = self.patch_to_embedding(x)
+        print('embedding shape', x.shape)
+
+        # Get the number of patches
         n = x.shape[1]
-        # add positional embeddings
+        print('number of pathces', n)
+
+        # Add positional embeddings to the patch embeddings
         x = x + self.pos_embedding[:, :n]
-        # apply normalization and dropout
+        print('patch + positional embedding shape', x.shape)
+
+        # Apply normalization and dropout
         x = self.post_emb_norm(x)
         x = self.dropout(x)
+        print('embeddings shape after normalization and dropout', x.shape)
 
+        # If the model uses register tokens, add them
         if self.has_register_tokens:
-            r = repeat(self.register_tokens, 'n d -> b n d', b = b)
+            r = repeat(self.register_tokens, 'n d -> b n d', b=b)
             x, ps = pack((x, r), 'b * d')
 
+        # Pass through attention layers
         embed = self.attn_layers(x)
+        print('embeddings shape', embed.shape)
 
+        # If register tokens were added, unpack them
         if self.has_register_tokens:
             embed, _ = unpack(embed, ps, 'b * d')
 
+        # Ensure only one of the flags is True
         assert at_most_one_of(return_embeddings, return_logits_and_embeddings)
 
+        # Return embeddings if mlp_head is not defined or if return_embeddings is True
         if not exists(self.mlp_head) or return_embeddings:
             return embed
 
-        pooled = embed.mean(dim = -2)
+        # Pool the embeddings to get logits
+        pooled = embed.mean(dim=-2)
         logits = self.mlp_head(pooled)
+        print('logits shape', logits.shape)
 
+        # Return logits or both logits and embeddings based on the flag
         if not return_logits_and_embeddings:
             return logits
 
         return logits, embed
+
+# Need to modify the forward method to process each channel of an image separately
+# and then concatenate the patches from each channel sequentially
+class ViTransformerWrapperMod(Module):
+    def __init__(
+            self,
+            *,
+            image_size,
+            patch_size,
+            attn_layers: Encoder,
+            channels=3,
+            num_classes=None,
+            post_emb_norm=False,
+            num_register_tokens=0,
+            emb_dropout=0.
+    ):
+        super().__init__()
+        assert divisible_by(image_size, patch_size), 'image dimensions must be divisible by the patch size'
+        dim = attn_layers.dim
+        num_patches_per_channel = (image_size // patch_size) ** 2
+        patch_dim = patch_size ** 2
+
+        self.patch_size = patch_size
+        self.channels = channels
+
+        # Positional embedding to accommodate all patches from all channels
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches_per_channel * channels, dim))
+
+        has_register_tokens = num_register_tokens > 0
+        self.has_register_tokens = has_register_tokens
+
+        if has_register_tokens:
+            self.register_tokens = nn.Parameter(torch.randn(num_register_tokens, dim))
+
+        # Embedding layer for patches
+        self.patch_to_embedding = nn.Sequential(
+            LayerNorm(patch_dim),
+            nn.Linear(patch_dim, dim),
+            LayerNorm(dim)
+        )
+
+        self.post_emb_norm = LayerNorm(dim) if post_emb_norm else nn.Identity()
+        self.dropout = nn.Dropout(emb_dropout)
+
+        self.attn_layers = attn_layers
+
+        self.mlp_head = nn.Linear(dim, num_classes) if num_classes is not None else nn.Identity()
+
+    def forward(
+            self,
+            img,
+            return_embeddings=False,
+            return_logits_and_embeddings=False
+    ):
+        b, c, h, w = img.shape
+        p = self.patch_size
+        print('img shape', img.shape)
+        print('batch size', b)
+        print('patch size', p)
+        assert c == self.channels, f'Expected {self.channels} channels, but got {c}'
+
+        patches = []
+        for i in range(c):
+            print(f'\textracting patches for channel {i}')
+            # Process each channel separately
+            channel_img = img[:, i, :, :].unsqueeze(1)
+            # Extract patches for the current channel
+            channel_patches = rearrange(channel_img, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=p, p2=p)
+            print(f'\tpatch shape {channel_patches.shape}')
+            # Embed the patches for the current channel
+            channel_patches = self.patch_to_embedding(channel_patches)
+            print(f'\tembedding shape {channel_patches.shape}\n')
+            patches.append(channel_patches)
+
+        print('patches length', len(patches))
+
+        # Concatenate the patches from all channels
+        x = torch.cat(patches, dim=1)
+        print('concatenated patches shape', x.shape)
+        n = x.shape[1]
+        print('number of pathces', n)
+
+        # Add positional embeddings to the concatenated patches
+        x = x + self.pos_embedding[:, :n]
+        print('patch + positional embedding shape', x.shape)
+
+        # Apply normalization and dropout
+        x = self.post_emb_norm(x)
+        x = self.dropout(x)
+        print('embeddings shape after normalization and dropout', x.shape)
+
+        if self.has_register_tokens:
+            r = repeat(self.register_tokens, 'n d -> b n d', b=b)
+            x, ps = pack((x, r), 'b * d')
+
+        # Pass through the attention layers
+        embed = self.attn_layers(x)
+        print('embeddings shape', embed.shape)
+
+        if self.has_register_tokens:
+            embed, _ = unpack(embed, ps, 'b * d')
+
+        assert not (return_embeddings and return_logits_and_embeddings)
+
+        if return_embeddings:
+            return embed
+
+        # Pool the embeddings to get logits
+        pooled = embed.mean(dim=-2)
+        logits = self.mlp_head(pooled)
+
+        if return_logits_and_embeddings:
+            return logits, embed
+
+        print('logits shape', logits.shape)
+        return logits
 
 class TransformerWrapper(Module):
     def __init__(
