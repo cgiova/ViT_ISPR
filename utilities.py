@@ -1,8 +1,10 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, roc_curve, auc
 import seaborn as sns
+import matplotlib.pyplot as plt
+
 
 def normalize(array):
     min_val = np.min(array)
@@ -38,6 +40,7 @@ def create_data_loader(data_path, labels_path, batch_size, shuffle=True):
     dataset = CustomDataset(data_path, labels_path)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=2)
 
+
 ## Model trainng and evaluation functions
 def run_inference(dataloader, model, device):
     all_outputs = []
@@ -66,7 +69,6 @@ def run_inference(dataloader, model, device):
 
     print('Process finished')
     return all_outputs, all_labels, preds
-
 
 
 def plot_confusion_matrix(y_true, y_pred, labels):
