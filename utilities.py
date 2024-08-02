@@ -43,7 +43,11 @@ def create_data_loader(data_path, labels_path, batch_size, shuffle=True):
 
 
 ## Model trainng and evaluation functions
-def run_inference(dataloader, model, device):
+def run_inference(dataloader, model):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+
+    model.eval()
     all_outputs = []
     all_labels = []
 
