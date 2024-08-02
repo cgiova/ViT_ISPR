@@ -4,6 +4,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import confusion_matrix, roc_curve, auc
 import seaborn as sns
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 
 def normalize(array):
