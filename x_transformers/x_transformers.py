@@ -1714,69 +1714,51 @@ class ViTransformerWrapperMod(Module):
             self,
             img,
             return_embeddings=False,
-            return_logits_and_embeddings=False
+            return_logits_and_embeddings=False,
+            return_attention_scores=False  # Added to return attention scores
     ):
         b, c, h, w = img.shape
         p = self.patch_size
-        # print('img shape', img.shape)
-        # print('batch size', b)
-        # print('patch size', p)
         assert c == self.channels, f'Expected {self.channels} channels, but got {c}'
 
         patches = []
         for i in range(c):
-            print(f'\textracting patches for channel {i}')
-            # Process each channel separately
             channel_img = img[:, i, :, :].unsqueeze(1)
-            # Extract patches for the current channel
             channel_patches = rearrange(channel_img, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=p, p2=p)
-            # print(f'\tpatch shape {channel_patches.shape}')
-            # Embed the patches for the current channel
             channel_patches = self.patch_to_embedding(channel_patches)
-            # print(f'\tembedding shape {channel_patches.shape}\n')
             patches.append(channel_patches)
 
-        # print('patches length', len(patches))
-
-        # Concatenate the patches from all channels
         x = torch.cat(patches, dim=1)
-        # print('concatenated patches shape', x.shape)
         n = x.shape[1]
-        # print('number of pathces', n)
-
-        # Add positional embeddings to the concatenated patches
         x = x + self.pos_embedding[:, :n]
-        # print('patch + positional embedding shape', x.shape)
-
-        # Apply normalization and dropout
         x = self.post_emb_norm(x)
         x = self.dropout(x)
-        # print('embeddings shape after normalization and dropout', x.shape)
 
         if self.has_register_tokens:
             r = repeat(self.register_tokens, 'n d -> b n d', b=b)
             x, ps = pack((x, r), 'b * d')
 
-        # Pass through the attention layers
-        embed = self.attn_layers(x)
-        # print('embeddings shape', embed.shape)
+        # Pass through attention layers and get attention scores if requested
+        if return_attention_scores:
+            embed, attention_scores = self.attn_layers(x, return_attention=True)  # Ensure attn_layers returns attention
+        else:
+            embed = self.attn_layers(x)
 
         if self.has_register_tokens:
             embed, _ = unpack(embed, ps, 'b * d')
 
-        assert not (return_embeddings and return_logits_and_embeddings)
-
         if return_embeddings:
             return embed
 
-        # Pool the embeddings to get logits
         pooled = embed.mean(dim=-2)
         logits = self.mlp_head(pooled)
 
         if return_logits_and_embeddings:
             return logits, embed
 
-        print('logits shape', logits.shape)
+        if return_attention_scores:
+            return logits, attention_scores, patches  # Now return attention scores and patches
+
         return logits
 
 
